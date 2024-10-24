@@ -3,7 +3,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -16,9 +15,11 @@ import { Switch } from "@/components/ui/switch"
 type Session = {
   worry: string
   duration: number
-  anxietyRatings: number[]
+  initialAnxiety: number
+  finalAnxiety: number
   answers: string[]
-  reflections: { text: string; rating: number }[]
+  reflections: string[]
+  timeSpent: number
 }
 
 type User = {
@@ -84,23 +85,25 @@ export default function WorryExposureTool() {
   const [user, setUser] = useState<User | null>(null)
   const [worry, setWorry] = useState('')
   const [duration, setDuration] = useState(1)
-  const [stage, setStage] = useState<'splash' | 'input' | 'exposure' | 'reflection' | 'dashboard'>('splash')
+  const [stage, setStage] = useState<'splash' | 'input' | 'exposure' | 'exposure-rating' | 'reflection' | 'reflection-rating' | 'dashboard'>('splash')
   const [currentPrompt, setCurrentPrompt] = useState(0)
-  const [anxietyRatings, setAnxietyRatings] = useState<number[]>([])
+  const [initialAnxiety, setInitialAnxiety] = useState<number | null>(null)
+  const [finalAnxiety, setFinalAnxiety] = useState<number | null>(null)
   const [answers, setAnswers] = useState<string[]>([])
-  const [reflections, setReflections] = useState<{ text: string; rating: number }[]>([])
-  const [timeRemaining, setTimeRemaining] = useState(0)
+  const [reflections, setReflections] = useState<string[]>([])
   const [progress, setProgress] = useState(0)
   const [showExamples, setShowExamples] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const [startTime, setStartTime] = useState<number | null>(null)
+  const [timeSpent, setTimeSpent] = useState(0)
+  const [currentAnswer, setCurrentAnswer] = useState('')
 
   useEffect(() => {
     const savedUser = localStorage.getItem('worryExposureUser')
     if (savedUser) {
       setUser(JSON.parse(savedUser))
     }
-    // Initialize audio
     audioRef.current = new Audio('/background-music.mp3')
     audioRef.current.loop = true
     return () => {
@@ -112,14 +115,13 @@ export default function WorryExposureTool() {
 
   useEffect(() => {
     let timer: NodeJS.Timeout
-    if (stage === 'exposure' && timeRemaining > 0) {
+    if (stage === 'exposure' || stage === 'reflection') {
       timer = setInterval(() => {
-        setTimeRemaining(prev => prev - 1)
-        setProgress(prev => prev + (100 / (duration * 60)))
+        setTimeSpent(prev => prev + 1)
       }, 1000)
     }
     return () => clearInterval(timer)
-  }, [stage, timeRemaining, duration])
+  }, [stage])
 
   useEffect(() => {
     if (audioRef.current) {
@@ -132,54 +134,51 @@ export default function WorryExposureTool() {
   }, [isMuted])
 
   const handleStartExposure = () => {
-    setTimeRemaining(duration * 60)
     setStage('exposure')
-    // Start playing audio when session begins
+    setStartTime(Date.now())
     if (audioRef.current && !isMuted) {
       audioRef.current.play().catch(error => console.log("Audio play failed:", error))
     }
   }
 
-  const handleAnxietyRating = (rating: number) => {
-    const newRatings = [...anxietyRatings]
-    newRatings[currentPrompt] = rating
-    setAnxietyRatings(newRatings)
-  }
-
-  const handleAnswer = (answer: string) => {
-    const newAnswers = [...answers]
-    newAnswers[currentPrompt] = answer
+  const handleAnswer = () => {
+    const newAnswers = [...answers, currentAnswer]
     setAnswers(newAnswers)
+    setProgress((newAnswers.length / aiPrompts.length) * 100)
+    setCurrentAnswer('') // Clear the current answer
+    if (newAnswers.length === aiPrompts.length) {
+      setStage('exposure-rating')
+    } else {
+      setCurrentPrompt(prev => prev + 1)
+    }
   }
 
   const handleNextPrompt = () => {
     if (currentPrompt < aiPrompts.length - 1) {
       setCurrentPrompt(prev => prev + 1)
+      setCurrentAnswer('') // Clear the current answer when moving to the next prompt
     } else {
-      setStage('reflection')
-      setCurrentPrompt(0)
+      setStage('exposure-rating')
     }
   }
 
   const handlePreviousPrompt = () => {
     if (currentPrompt > 0) {
       setCurrentPrompt(prev => prev - 1)
-    } else if (stage === 'reflection') {
-      setStage('exposure')
-      setCurrentPrompt(aiPrompts.length - 1)
+      setCurrentAnswer(answers[currentPrompt - 1] || '') // Set the answer to the previous question
     } else {
       setStage('input')
     }
   }
 
-  const handleReflectionSubmit = (reflection: string, rating: number) => {
-    const newReflections = [...reflections]
-    newReflections[currentPrompt] = { text: reflection, rating }
+  const handleReflectionSubmit = (reflection: string) => {
+    const newReflections = [...reflections, reflection]
     setReflections(newReflections)
-    if (currentPrompt < reflectionQuestions.length - 1) {
-      setCurrentPrompt(prev => prev + 1)
+    setCurrentAnswer('') // Clear the current answer
+    if (newReflections.length === reflectionQuestions.length) {
+      setStage('reflection-rating')
     } else {
-      saveSession()
+      setCurrentPrompt(prev => prev + 1)
     }
   }
 
@@ -187,9 +186,11 @@ export default function WorryExposureTool() {
     const newSession: Session = {
       worry,
       duration,
-      anxietyRatings,
+      initialAnxiety: initialAnxiety || 0,
+      finalAnxiety: finalAnxiety || 0,
       answers,
       reflections,
+      timeSpent
     }
     const updatedUser = user ? {
       ...user,
@@ -201,7 +202,6 @@ export default function WorryExposureTool() {
     setUser(updatedUser)
     localStorage.setItem('worryExposureUser', JSON.stringify(updatedUser))
     setStage('dashboard')
-    // Stop audio when session ends
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current.currentTime = 0
@@ -213,12 +213,13 @@ export default function WorryExposureTool() {
     setDuration(1)
     setStage('input')
     setCurrentPrompt(0)
-    setAnxietyRatings([])
+    setInitialAnxiety(null)
+    setFinalAnxiety(null)
     setAnswers([])
     setReflections([])
-    setTimeRemaining(0)
     setProgress(0)
-    // Stop audio when resetting the tool
+    setTimeSpent(0)
+    setCurrentAnswer('')
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current.currentTime = 0
@@ -303,10 +304,26 @@ export default function WorryExposureTool() {
                     <SelectItem value="10">10 minutes</SelectItem>
                   </SelectContent>
                 </Select>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-2">
+                  Rate your current anxiety level:
+                </label>
+                <div className="flex items-center space-x-2 mb-4">
+                  {[1, 2, 3, 4, 5].map((value) => (
+                    <Button
+                      key={value}
+                      variant={initialAnxiety === value ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setInitialAnxiety(value)}
+                      className={`w-10 h-10 rounded-full p-0 ${initialAnxiety === value ? 'bg-orange-500 text-white' : 'border-black'}`}
+                    >
+                      {value}
+                    </Button>
+                  ))}
+                </div>
                 <Button 
                   onClick={handleStartExposure} 
                   className="w-full bg-pink-500 hover:bg-pink-600 text-white" 
-                  disabled={!worry || !duration}
+                  disabled={!worry || !duration || !initialAnxiety}
                 >
                   Start Exposure Session
                 </Button>
@@ -337,48 +354,26 @@ export default function WorryExposureTool() {
               <motion.div
                 key="exposure"
                 initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
+                animate={{ opacity: 1, y:  0 }}
                 exit={{ opacity: 0, y: -20 }}
                 transition={{ duration: 0.5 }}
               >
                 <div className="mb-4">
                   <Progress value={progress} className="w-full" />
                   <p className="text-center mt-2">
-                    Time remaining: {Math.floor(timeRemaining / 60)}:{(timeRemaining % 60).toString().padStart(2, '0')}
+                    Question {currentPrompt + 1} of {aiPrompts.length}
                   </p>
                 </div>
                 <Card className="mb-4 bg-white dark:bg-gray-800">
                   <CardContent className="p-4">
                     <p className="text-lg mb-4">{aiPrompts[currentPrompt]}</p>
                     <Textarea
-                      value={answers[currentPrompt] || ''}
-                      onChange={(e) => handleAnswer(e.target.value)}
+                      key={currentPrompt} // This key prop forces a re-render when the prompt changes
+                      value={currentAnswer}
+                      onChange={(e) => setCurrentAnswer(e.target.value)}
                       placeholder="Type your answer here..."
                       className="w-full mb-4"
                     />
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-2">
-                      Rate your anxiety:
-                    </label>
-                    <div className="flex items-center space-x-2 mb-4">
-                
-                      {[1, 2, 3, 4, 5].map((value) => (
-                        <Button
-                          key={value}
-                          variant={anxietyRatings[currentPrompt] === value ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => handleAnxietyRating(value)}
-                          className={`w-10 h-10 rounded-full p-0 ${anxietyRatings[currentPrompt] === value ? 'bg-orange-500 text-white' : 'border-black'}`}
-                        >
-                          {value}
-                        </Button>
-                      ))}
-                    </div>
-                    <div className="flex items-center">
-                      <Star className="w-5 h-5 text-yellow-500 mr-1" />
-                      <span className="text-sm text-gray-600 dark:text-gray-300">
-                        {anxietyRatings[currentPrompt] ? `You rated: ${anxietyRatings[currentPrompt]}/5` : 'Not rated yet'}
-                      </span>
-                    </div>
                   </CardContent>
                 </Card>
                 <div className="flex justify-between">
@@ -386,13 +381,49 @@ export default function WorryExposureTool() {
                     <ArrowLeft className="mr-2 w-4 h-4" /> Back
                   </Button>
                   <Button 
-                    onClick={handleNextPrompt} 
+                    onClick={handleAnswer} 
                     className="bg-pink-500 hover:bg-pink-600 text-white" 
-                    disabled={!anxietyRatings[currentPrompt] || !answers[currentPrompt]}
+                    disabled={!currentAnswer}
                   >
                     Next <ArrowRight className="ml-2 w-4 h-4" />
                   </Button>
                 </div>
+              </motion.div>
+            )}
+            {stage === 'exposure-rating' && (
+              <motion.div
+                key="exposure-rating"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                transition={{ duration: 0.5 }}
+              >
+                <h3 className="text-xl font-semibold mb-4">Rate Your Anxiety</h3>
+                <p className="mb-4">Now that you've gone through the exposure, how would you rate your anxiety?</p>
+                <div className="flex items-center space-x-2 mb-4">
+                  {[1, 2, 3, 4, 5].map((value) => (
+                    <Button
+                      key={value}
+                      variant={finalAnxiety === value ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setFinalAnxiety(value)}
+                      className={`w-10 h-10 rounded-full p-0 ${finalAnxiety === value ? 'bg-orange-500 text-white' : 'border-black'}`}
+                    >
+                      {value}
+                    </Button>
+                  ))}
+                </div>
+                <Button 
+                  onClick={() => {
+                    setStage('reflection')
+                    setCurrentPrompt(0)
+                    setCurrentAnswer('')
+                  }} 
+                  className="w-full bg-pink-500 hover:bg-pink-600 text-white" 
+                  disabled={finalAnxiety === null}
+                >
+                  Continue to Reflection
+                </Button>
               </motion.div>
             )}
             {stage === 'reflection' && (
@@ -408,49 +439,58 @@ export default function WorryExposureTool() {
                   <CardContent className="p-4">
                     <p className="mb-4">{reflectionQuestions[currentPrompt]}</p>
                     <Textarea
-                      value={reflections[currentPrompt]?.text || ''}
-                      onChange={(e) => {
-                        const newReflections = [...reflections]
-                        newReflections[currentPrompt] = { ...newReflections[currentPrompt], text: e.target.value }
-                        setReflections(newReflections)
-                      }}
+                      key={`reflection-${currentPrompt}`} // This key prop forces a re-render when the prompt changes
+                      value={currentAnswer}
+                      onChange={(e) => setCurrentAnswer(e.target.value)}
                       placeholder="Your thoughts..."
                       className="w-full mb-4"
                     />
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-2">
-                      Rate how helpful this reflection was:
-                    </label>
-                    <div className="flex items-center space-x-2 mb-4">
-                      {[1, 2, 3, 4, 5].map((value) => (
-                        <Button
-                          key={value}
-                          variant={reflections[currentPrompt]?.rating === value ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => {
-                            const newReflections = [...reflections]
-                            newReflections[currentPrompt] = { ...newReflections[currentPrompt], rating: value }
-                            setReflections(newReflections)
-                          }}
-                          className={`w-10 h-10 rounded-full p-0 ${reflections[currentPrompt]?.rating === value ? 'bg-orange-500 text-white' : 'border-black'}`}
-                        >
-                          {value}
-                        </Button>
-                      ))}
-                    </div>
                   </CardContent>
                 </Card>
                 <div className="flex justify-between">
-                  <Button onClick={handlePreviousPrompt} className="bg-gray-500 hover:bg-gray-600 text-white">
+                  <Button onClick={() => currentPrompt > 0 ? setCurrentPrompt(prev => prev - 1) : setStage('exposure-rating')} className="bg-gray-500 hover:bg-gray-600 text-white">
                     <ArrowLeft className="mr-2 w-4 h-4" /> Back
                   </Button>
                   <Button 
-                    onClick={() => handleReflectionSubmit(reflections[currentPrompt]?.text || '', reflections[currentPrompt]?.rating || 0)} 
+                    onClick={() => handleReflectionSubmit(currentAnswer)} 
                     className="bg-pink-500 hover:bg-pink-600 text-white"
-                    disabled={!reflections[currentPrompt]?.text || !reflections[currentPrompt]?.rating}
+                    disabled={!currentAnswer}
                   >
                     {currentPrompt < reflectionQuestions.length - 1 ? 'Next Question' : 'Complete Reflection'}
                   </Button>
                 </div>
+              </motion.div>
+            )}
+            {stage === 'reflection-rating' && (
+              <motion.div
+                key="reflection-rating"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                transition={{ duration: 0.5 }}
+              >
+                <h3 className="text-xl font-semibold mb-4">Final Anxiety Rating</h3>
+                <p className="mb-4">After reflecting on your experience, how would you rate your anxiety now?</p>
+                <div className="flex items-center space-x-2 mb-4">
+                  {[1, 2, 3, 4, 5].map((value) => (
+                    <Button
+                      key={value}
+                      variant={finalAnxiety === value ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setFinalAnxiety(value)}
+                      className={`w-10 h-10 rounded-full p-0 ${finalAnxiety === value ? 'bg-orange-500 text-white' : 'border-black'}`}
+                    >
+                      {value}
+                    </Button>
+                  ))}
+                </div>
+                <Button 
+                  onClick={saveSession} 
+                  className="w-full bg-pink-500 hover:bg-pink-600 text-white" 
+                  disabled={finalAnxiety === null}
+                >
+                  Complete Session
+                </Button>
               </motion.div>
             )}
             {stage === 'dashboard' && user && (
@@ -468,7 +508,7 @@ export default function WorryExposureTool() {
                       <Brain className="w-4 h-4 mr-2" /> Total Sessions: {user.sessions.length}
                     </Badge>
                     <Badge variant="outline" className="text-blue-500 border-blue-500">
-                      <Clock className="w-4 h-4 mr-2" /> Total Time: {user.sessions.reduce((acc, session) => acc + session.duration, 0)} minutes
+                      <Clock className="w-4 h-4 mr-2" /> Total Time: {user.sessions.reduce((acc, session) => acc + session.timeSpent, 0)} seconds
                     </Badge>
                   </div>
                   <div>
@@ -483,13 +523,13 @@ export default function WorryExposureTool() {
                     <h4 className="font-semibold mb-2">Anxiety Trend:</h4>
                     <div className="h-20 flex items-end space-x-1">
                       {user.sessions.slice(-5).map((session, index) => {
-                        const avgAnxiety = session.anxietyRatings.reduce((a, b) => a + b, 0) / session.anxietyRatings.length
+                        const anxietyReduction = session.initialAnxiety - session.finalAnxiety
                         return (
                           <div
                             key={index}
                             className="bg-blue-500 w-1/5"
-                            style={{ height: `${avgAnxiety * 20}%` }}
-                            title={`Session ${index + 1}: ${avgAnxiety.toFixed(1)}`}
+                            style={{ height: `${anxietyReduction * 20}%` }}
+                            title={`Session ${index + 1}: ${anxietyReduction}`}
                           />
                         )
                       })}
